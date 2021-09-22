@@ -192,8 +192,7 @@ macro_rules! locked_kernel {
 
             fn init(&mut self) {
                 if self.kernel.is_none() {
-                    // Deleted by long 20210816
-                    // PriorityLock::wait(self.priority);
+                    PriorityLock::wait(self.priority);
                     info!("GPU is available for {}!", $name);
                     self.kernel = $func::<E>(self.log_d, self.priority);
                 }
