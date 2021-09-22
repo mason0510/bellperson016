@@ -86,7 +86,7 @@ impl<E: Engine> Proof<E> {
         debug_assert_eq!(proof_bytes.len(), num_proofs * Self::size());
 
         // Decompress and group check in parallel
-        RAYON_THREAD_POOL.install(|| {
+        THREAD_POOL.install(|| {
             #[derive(Clone, Copy)]
             enum ProofPart<E: Engine> {
                 A(E::G1Affine),
