@@ -78,9 +78,11 @@ where
         deg: u32,
         max_deg: u32,
     ) -> GPUResult<()> {
-        if locks::PriorityLock::should_break(self.priority) {
-            return Err(GPUError::GPUTaken);
-        }
+        // Modified by long 20210816
+        // if locks::PriorityLock::should_break(self.priority) {
+        //     return Err(GPUError::GPUTaken);
+        // }
+        let _ = self.priority;
 
         let n = 1u32 << log_n;
         let local_work_size = 1 << cmp::min(deg - 1, MAX_LOG2_LOCAL_WORK_SIZE);
@@ -137,22 +139,37 @@ where
     /// * `log_n` - Specifies log2 of number of elements
     pub fn radix_fft(&mut self, a: &mut [E::Fr], omega: &E::Fr, log_n: u32) -> GPUResult<()> {
         let n = 1 << log_n;
-        let mut src_buffer = self.program.create_buffer::<E::Fr>(n)?;
-        let mut dst_buffer = self.program.create_buffer::<E::Fr>(n)?;
+        // let mut src_buffer = self.program.create_buffer::<E::Fr>(n)?;
+        // let mut dst_buffer = self.program.create_buffer::<E::Fr>(n)?;
+        let mut buffer0 = self.program.create_buffer::<E::Fr>(n)?;
+        let mut buffer1 = self.program.create_buffer::<E::Fr>(n)?;
 
         let max_deg = cmp::min(MAX_LOG2_RADIX, log_n);
         self.setup_pq_omegas(omega, n, max_deg)?;
 
-        self.program.write_from_buffer(&src_buffer, 0, &*a)?;
+        // self.program.write_from_buffer(&src_buffer, 0, &*a)?;
+        buffer0.write_from(0, &*a)?; // Why NOT a ? by long
         let mut log_p = 0u32;
+        let mut flag = false;
         while log_p < log_n {
             let deg = cmp::min(max_deg, log_n - log_p);
-            self.radix_fft_round(&src_buffer, &dst_buffer, log_n, log_p, deg, max_deg)?;
+            flag = !flag;
+            if flag == true {
+                self.radix_fft_round(&buffer0, &mut buffer1, log_n, log_p, deg, max_deg)?;
+            } else {
+                self.radix_fft_round(&buffer1, &mut buffer0, log_n, log_p, deg, max_deg)?;
+            }
+            // self.radix_fft_round(&src_buffer, &dst_buffer, log_n, log_p, deg, max_deg)?;
             log_p += deg;
-            std::mem::swap(&mut src_buffer, &mut dst_buffer);
+            // std::mem::swap(&mut src_buffer, &mut dst_buffer);
         }
 
-        self.program.read_into_buffer(&src_buffer, 0, a)?;
+        // self.program.read_into_buffer(&src_buffer, 0, a)?;
+        if flag == true {
+            buffer1.read_into(0, a)?;
+        } else {
+            buffer0.read_into(0, a)?;
+        }
 
         Ok(())
     }

@@ -16,11 +16,12 @@ use crate::{
     Circuit, ConstraintSystem, Index, LinearCombination, SynthesisError, Variable, BELLMAN_VERSION,
 };
 use log::info;
-#[cfg(feature = "gpu")]
-use log::trace;
+// Deleted by long 20210816
+// #[cfg(feature = "gpu")]
+// use log::trace;
 
-#[cfg(feature = "gpu")]
-use crate::gpu::PriorityLock;
+// #[cfg(feature = "gpu")]
+// use crate::gpu::PriorityLock;
 
 // Added by jackoelv for C2 20210330 ----------------------------
 use std::sync::mpsc; 
@@ -386,14 +387,14 @@ where
     let assignments = rx_assignments.recv().unwrap();
     info!("ZQ: get params end: {:?}", now.elapsed());
     // --------------------------------------------------------------------------------
-
-    #[cfg(feature = "gpu")]
-    let prio_lock = if priority {
-        trace!("acquiring priority lock");
-        Some(PriorityLock::lock())
-    } else {
-        None
-    };
+    // Deleted by long 20210816
+    // #[cfg(feature = "gpu")]
+    // let prio_lock = if priority {
+    //     trace!("acquiring priority lock");
+    //     Some(PriorityLock::lock())
+    // } else {
+    //     None
+    // };
 
     // Added by jackoelv for C2 20210330
     info!("ZQ: a_s start");
@@ -625,6 +626,9 @@ where
     info!("ZQ: inputs end: {:?}", now.elapsed()); // Added by jackoelv for C2 20210330
     drop(multiexp_kern);
 
+     // Added by long 20210816
+    //  c2_proof_unlock();
+
     // Added by jackoelv for C2 20210330
     info!("ZQ: proofs start");
     let now = Instant::now();
@@ -684,16 +688,18 @@ where
         )
         .collect::<Result<Vec<_>, SynthesisError>>()?;
     info!("ZQ: proofs end: {:?}", now.elapsed()); // Added by jackoelv for C2 20210330
-
-    #[cfg(feature = "gpu")]
-    {
-        trace!("dropping priority lock");
-        drop(prio_lock);
-    }
+    
+    // Deleted by long 20210816
+    // #[cfg(feature = "gpu")]
+    // {
+    //     trace!("dropping priority lock");
+    //     drop(prio_lock);
+    // }
 
     // Modified by jackoelv for C2 20210330
     // let proof_time = start.elapsed();
     // info!("prover time: {:?}", proof_time);
+    c2_proof_unlock();
     info!("ZQ: prover time: {:?}", start.elapsed());
 
     Ok(proofs)
