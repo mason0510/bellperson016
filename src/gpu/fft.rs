@@ -45,7 +45,7 @@ where
 
         let src = sources::kernel::<E>(device.vendor() == opencl::Vendor::Nvidia);
 
-        let program = opencl::Program::from_opencl(device, &src)?;
+        let program = opencl::Program::from_opencl(&device, &src)?;
         let pq_buffer = program.create_buffer::<E::Fr>(1 << MAX_LOG2_RADIX >> 1)?;
         let omegas_buffer = program.create_buffer::<E::Fr>(LOG2_MAX_ELEMENTS)?;
 
@@ -120,14 +120,16 @@ where
                 pq[i].mul_assign(&twiddle);
             }
         }
-        self.pq_buffer.write_from(0, &pq)?;
+        self.program.write_from_buffer(&self.pq_buffer, 0, &pq)?;
+
         // Precalculate [omega, omega^2, omega^4, omega^8, ..., omega^(2^31)]
         let mut omegas = vec![E::Fr::zero(); 32];
         omegas[0] = *omega;
         for i in 1..LOG2_MAX_ELEMENTS {
             omegas[i] = omegas[i - 1].pow([2u64]);
         }
-        self.omegas_buffer.write_from(0, &omegas)?;
+        self.program
+            .write_from_buffer(&self.omegas_buffer, 0, &omegas)?;
 
         Ok(())
     }

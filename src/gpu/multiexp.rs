@@ -5,12 +5,16 @@ use super::utils;
 use crate::bls::Engine;
 use crate::multicore::Worker;
 use crate::multiexp::{multiexp as cpu_multiexp, FullDensity};
+
 use ff::{PrimeField, ScalarEngine};
 use groupy::{CurveAffine, CurveProjective};
 use log::{error, info};
-use rayon::prelude::*;
 use rust_gpu_tools::*;
 use std::any::TypeId;
+// use std::sync::{
+//     atomic::{AtomicBool, Ordering},
+//     Arc,
+// };
 use std::sync::Arc;
 
 // Added by jackoelv for C2 20210330
@@ -18,22 +22,20 @@ use std::sync::mpsc;
 extern crate scoped_threadpool;
 use scoped_threadpool::Pool;
 
-// Modified by jackoelv for C2 20210330
-// const MAX_WINDOW_SIZE: usize = 11; // 10;
+// const MAX_WINDOW_SIZE: usize = 10;
 const LOCAL_WORK_SIZE: usize = 256;
-// const MEMORY_PADDING: f64 = 0.1f64; // 0.2f64; // Let 20% of GPU memory be free
+// const MEMORY_PADDING: f64 = 0.2f64; // Let 20% of GPU memory be free
 
 pub fn get_cpu_utilization() -> f64 {
     use std::env;
     env::var("BELLMAN_CPU_UTILIZATION")
-        .and_then(|v| match v.parse() {
-            Ok(val) => Ok(val),
+        .map_or(0f64, |v| match v.parse() {
+            Ok(val) => val,
             Err(_) => {
                 error!("Invalid BELLMAN_CPU_UTILIZATION! Defaulting to 0...");
-                Ok(0f64)
+                0f64
             }
         })
-        .unwrap_or(0f64)
         .max(0f64)
         .min(1f64)
 }
@@ -57,7 +59,6 @@ fn calc_num_groups(core_count: usize, num_windows: usize) -> usize {
     2 * core_count / num_windows
 }
 
-// Deleted by jackoelv for C2 20210330
 // fn calc_window_size(n: usize, exp_bits: usize, core_count: usize) -> usize {
 //     // window_size = ln(n / num_groups)
 //     // num_windows = exp_bits / window_size
@@ -76,7 +77,7 @@ fn calc_num_groups(core_count: usize, num_windows: usize) -> usize {
 
 //     MAX_WINDOW_SIZE
 // }
-// Deleted by jackoelv for C2 20210330
+
 // fn calc_best_chunk_size(max_window_size: usize, core_count: usize, exp_bits: usize) -> usize {
 //     // Best chunk-size (N) can also be calculated using the same logic as calc_window_size:
 //     // n = e^window_size * window_size * 2 * core_count / exp_bits
@@ -87,7 +88,7 @@ fn calc_num_groups(core_count: usize, num_windows: usize) -> usize {
 //         / (exp_bits as f64))
 //         .ceil() as usize
 // }
-// Deleted by jackoelv for C2 20210330
+
 // fn calc_chunk_size<E>(mem: u64, core_count: usize) -> usize
 // where
 //     E: Engine,
@@ -108,9 +109,8 @@ impl<E> SingleMultiexpKernel<E>
 where
     E: Engine,
 {
-    // Modified by jackoelv for C2 20210330
     pub fn create(d: opencl::Device, priority: bool) -> GPUResult<SingleMultiexpKernel<E>> {
-        let src = sources::kernel::<E>(d.brand() == opencl::Brand::Nvidia);
+        let src = sources::kernel::<E>(d.vendor() == opencl::Vendor::Nvidia);
 
         // let exp_bits = exp_size::<E>() * 8;
         let core_count = utils::get_core_count(&d);
@@ -118,10 +118,10 @@ where
         // let max_n = calc_chunk_size::<E>(mem, core_count);
         // let best_n = calc_best_chunk_size(MAX_WINDOW_SIZE, core_count, exp_bits);
         // let n = std::cmp::min(max_n, best_n);
-        let n = 568; // Not used
+        let n = 568;// Not used
 
         Ok(SingleMultiexpKernel {
-            program: opencl::Program::from_opencl(d, &src)?,
+            program: opencl::Program::from_opencl(&d, &src)?,
             core_count,
             n,
             priority,
@@ -129,7 +129,6 @@ where
         })
     }
 
-    // Modified by jackoelv for C2 20210330
     pub fn multiexp<G>(
         &mut self,
         bases: &[G],
@@ -154,10 +153,10 @@ where
         let bucket_len = 1 << window_size;
 
         info!("bucket_len is :{}",  bucket_len);
-
         // Each group will have `num_windows` threads and as there are `num_groups` groups, there will
         // be `num_groups` * `num_windows` threads in total.
         // Each thread will use `num_groups` * `num_windows` * `bucket_len` buckets.
+
         let size1 = std::mem::size_of::<G>();
         let size2 = std::mem::size_of::<<<G::Engine as ScalarEngine>::Fr as PrimeField>::Repr>();
         let size3 = std::mem::size_of::<<G as CurveAffine>::Projective>();
@@ -168,12 +167,12 @@ where
         info!("GABEDEBUG: <G> size:{}, <PrimeField> size:{}, <Projective> size:{}", size1, size2, size3);
         info!("GABEDEBUG: GPU mem need:{}byte, {}Mbyte", mem1 + mem2 + mem3 + mem4, (mem1 + mem2 + mem3 + mem4)/(1024*1024));
 
-        let mut base_buffer = self.program.create_buffer::<G>(n)?;
-        base_buffer.write_from(0, bases)?;
-        let mut exp_buffer = self
+        let base_buffer = self.program.create_buffer::<G>(n)?;
+        self.program.write_from_buffer(&base_buffer, 0, bases)?;
+        let exp_buffer = self
             .program
             .create_buffer::<<<G::Engine as ScalarEngine>::Fr as PrimeField>::Repr>(n)?;
-        exp_buffer.write_from(0, exps)?;
+        self.program.write_from_buffer(&exp_buffer, 0, exps)?;
 
         let bucket_buffer = self
             .program
@@ -182,10 +181,9 @@ where
             .program
             .create_buffer::<<G as CurveAffine>::Projective>(2 * self.core_count)?;
 
-        // Make global work size divisible by `LOCAL_WORK_SIZE`
-        let mut global_work_size = num_windows * num_groups;
-        global_work_size +=
-            (LOCAL_WORK_SIZE - (global_work_size % LOCAL_WORK_SIZE)) % LOCAL_WORK_SIZE;
+        // The global work size follows CUDA's definition and is the number of `LOCAL_WORK_SIZE`
+        // sized thread groups.
+        let global_work_size = (num_windows * num_groups + LOCAL_WORK_SIZE - 1) / LOCAL_WORK_SIZE;
 
         let kernel = self.program.create_kernel(
             if TypeId::of::<G>() == TypeId::of::<E::G1Affine>() {
@@ -196,22 +194,23 @@ where
                 return Err(GPUError::Simple("Only E::G1 and E::G2 are supported!"));
             },
             global_work_size,
-            None,
-        );
+            LOCAL_WORK_SIZE,
+        )?;
 
         kernel
             .arg(&base_buffer)
             .arg(&bucket_buffer)
             .arg(&result_buffer)
             .arg(&exp_buffer)
-            .arg(n as u32)
-            .arg(num_groups as u32)
-            .arg(num_windows as u32)
-            .arg(window_size as u32)
+            .arg(&(n as u32))
+            .arg(&(num_groups as u32))
+            .arg(&(num_windows as u32))
+            .arg(&(window_size as u32))
             .run()?;
 
-        let mut results = vec![<G as CurveAffine>::Projective::zero(); num_groups * num_windows];
-        result_buffer.read_into(0, &mut results)?;
+        let mut results = vec![<G as CurveAffine>::Projective::zero(); 2 * self.core_count];
+        self.program
+            .read_into_buffer(&result_buffer, 0, &mut results)?;
 
         // Using the algorithm below, we can calculate the final result by accumulating the results
         // of those `NUM_GROUPS` * `NUM_WINDOWS` threads.
@@ -246,6 +245,7 @@ where
     E: Engine,
 {
     pub fn create(priority: bool) -> GPUResult<MultiexpKernel<E>> {
+        // let lock = locks::GPULock::lock();
         let lock = locks::GPULock::lock_all(); // Modified by long 20210512
 
         let devices = opencl::Device::all();
@@ -273,11 +273,13 @@ where
             kernels.len(),
             get_cpu_utilization()
         );
-        for (_, k) in kernels.iter().enumerate() {
+        // for (i, k) in kernels.iter().enumerate() {
+            for (_, k) in kernels.iter().enumerate() {
             info!(
                 "Multiexp: Device {}: {} (Chunk-size: {})",
+                // i,
                 k.program.device().bus_id().unwrap(), // i, // Modified by long 20210312
-                k.program.device().name(),
+                k.program.device_name(),
                 k.n
             );
         }
@@ -287,7 +289,6 @@ where
         })
     }
 
-    // Modified by jackoelv for C2 20210330
     pub fn multiexp<G>(
         &mut self,
         pool: &Worker,
@@ -316,38 +317,60 @@ where
 
         let mut acc = <G as CurveAffine>::Projective::zero();
 
-        // let results = crate::multicore::THREAD_POOL.install(|| {
-        //     if n > 0 {
-        //         bases
-        //         .par_chunks(chunk_size)
-        //         .zip(exps.par_chunks(chunk_size))
-        //         .zip(self.kernels.par_iter_mut())
-        //         .map(|((bases, exps), kern)| -> Result<<G as CurveAffine>::Projective, GPUError> {
-        //             let mut acc = <G as CurveAffine>::Projective::zero();
-        //             for (bases, exps) in bases.chunks(kern.n).zip(exps.chunks(kern.n)) {
-        //                 match kern.multiexp(bases, exps, bases.len()) {
-        //                     Ok(result) => acc.add_assign(&result),
-        //                     Err(e) => return Err(e),
-        //                 }
-        //             }
+        // let mut results = Vec::new();
+        // let is_ok = AtomicBool::new(true);
 
-        //             Ok(acc)
-        //         })
-        //         .collect::<Vec<_>>()
-        //     } else {
-        //         Vec::new()
+
+        // let cpu_acc = pool.scoped(|s| {
+        //     if n > 0 {
+        //         results = (0..self.kernels.len())
+        //             .map(|_| Ok(G::Projective::zero()))
+        //             .collect::<Vec<_>>();
+
+        //         for (((bases, exps), kern), result) in bases
+        //             .chunks(chunk_size)
+        //             .zip(exps.chunks(chunk_size))
+        //             .zip(self.kernels.iter_mut())
+        //             .zip(results.iter_mut())
+        //         {
+        //             let is_ok = &is_ok;
+        //             s.execute(move || {
+        //                 let mut acc = <G as CurveAffine>::Projective::zero();
+        //                 for (bases, exps) in bases.chunks(kern.n).zip(exps.chunks(kern.n)) {
+        //                     if !is_ok.load(Ordering::SeqCst) {
+        //                         break;
+        //                     }
+        //                     match kern.multiexp(bases, exps, bases.len()) {
+        //                         Ok(result) => acc.add_assign(&result),
+        //                         Err(e) => {
+        //                             *result = Err(e);
+        //                             is_ok.store(false, Ordering::SeqCst);
+        //                             break;
+        //                         }
+        //                     }
+        //                 }
+        //                 if is_ok.load(Ordering::SeqCst) {
+        //                     *result = Ok(acc);
+        //                 }
+        //             });
+        //         }
         //     }
+
+        //     cpu_multiexp(
+        //         &pool,
+        //         (Arc::new(cpu_bases.to_vec()), 0),
+        //         FullDensity,
+        //         Arc::new(cpu_exps.to_vec()),
+        //         &mut None,
+        //     )
         // });
 
-        // let cpu_acc = cpu_multiexp(
-        //     &pool,
-        //     (Arc::new(cpu_bases.to_vec()), 0),
-        //     FullDensity,
-        //     Arc::new(cpu_exps.to_vec()),
-        //     &mut None,
-        // );
+        // let mut acc = <G as CurveAffine>::Projective::zero();
+        // for r in results {
+        //     acc.add_assign(&r?);
+        // }
 
-        // concurrent computing
+        // acc.add_assign(&cpu_acc.wait().unwrap());
         let (tx_gpu, rx_gpu) = mpsc::channel();
         let (tx_cpu, rx_cpu) = mpsc::channel();
         let mut scoped_pool = Pool::new(2);
